@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const db = require("../controllers/db");
 
-// Helper function to get last vowel
+// Helper: Get last vowel for suffix logic
 const getLastVowel = (word) => {
   const vowels = ["a", "ä", "e", "i", "ı", "o", "ö", "u", "ü"];
   for (let i = word.length - 1; i >= 0; i--) {
@@ -11,7 +11,7 @@ const getLastVowel = (word) => {
   return null;
 };
 
-// Helper function to transliterate Latin Gagauz to Cyrillic-style pronunciation
+// Helper: Latin → Cyrillic transcription for Gagauz
 const transliterateToCyrillic = (text) => {
   const map = {
     Ä: "Ӓ",
@@ -81,8 +81,8 @@ const transliterateToCyrillic = (text) => {
     .join("");
 };
 
-// Simplified suffix rules based on plural and nominative case
-const getGagauzNounSuffix = (vowel, plural) => {
+// Helper: Get plural suffix if applicable
+const getGagauzNounSuffix = (vowel, plural, wcase) => {
   if (!vowel) return "";
   const pluralSuffix = {
     a: "lar",
@@ -107,9 +107,9 @@ router.post("/translate", async (req, res) => {
   try {
     const input = text.trim().toLowerCase();
 
-    // word : base form, code_parent: root word, plural: is the word plural
+    // Step 1: Lookup word in dict_rus
     const [rusRows] = await db.execute(
-      `SELECT word, code_parent, plural, wcase FROM dict_rus WHERE word = ? LIMIT 1`,
+      `SELECT word, code, code_parent, plural, wcase FROM dict_rus WHERE word = ? LIMIT 1`,
       [input]
     );
 
@@ -123,12 +123,12 @@ router.post("/translate", async (req, res) => {
       });
     }
 
+    // Step 2: Climb to the topmost code_parent to get true lemma (base word)
     let baseWord = rusRows[0].word;
     let currentCode = rusRows[0].code_parent;
     let plural = rusRows[0].plural || 0;
     let wcase = rusRows[0].wcase || 0;
 
-    // If the Russian word has a code_parent, follow it recursively until the base/root form is found.
     while (currentCode && currentCode !== 0) {
       const [parentRows] = await db.execute(
         `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
@@ -139,7 +139,7 @@ router.post("/translate", async (req, res) => {
       currentCode = parentRows[0].code_parent;
     }
 
-    // Find matches in dict_gagauz using multiple fields:noun, verb, izafet, etc.
+    // Step 3: Try matching baseWord in Gagauz noun, etc.
     let [gagRows] = await db.execute(
       `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
        WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
@@ -164,32 +164,21 @@ router.post("/translate", async (req, res) => {
       });
     }
 
-    // Prefers rows where the Russian base word appears explicitly in noun.
+    // Step 4: Match baseWord inside noun list
     const matched =
       gagRows.find((row) => {
         const nouns = row.noun ? row.noun.split(",").map((s) => s.trim()) : [];
         return nouns.includes(baseWord);
       }) || gagRows[0];
 
-    const nounForms = matched.noun
-      ? matched.noun.split(",").map((s) => s.trim())
-      : [];
-    let root;
-    // Determine Gagauz Root
-    if (nounForms.includes(input)) {
-      root = matched.word;
-    } else if (nounForms.length > 0) {
-      root = nounForms[0];
-    } else {
-      root = matched.word;
-    }
+    // Step 5: Determine root and apply plural suffix if needed
+    const root = matched.word;
 
-    // Apply Suffix Logic
     const lastVowel = getLastVowel(root);
-    const suffix = getGagauzNounSuffix(lastVowel, plural);
+    const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
     const translation = root + suffix;
 
-    // Find Synonyms
+    // Step 6: Synonyms (and backrefs)
     let synonyms = [];
     if (matched.synonym) {
       synonyms = matched.synonym
@@ -223,7 +212,7 @@ router.post("/translate", async (req, res) => {
 
     synonyms = [...new Set(synonyms)].filter((s) => s !== root);
 
-    // Generate Pronunciation
+    // Step 7: Pronunciation
     const pronunciation =
       matched.transcription || transliterateToCyrillic(translation);
 
