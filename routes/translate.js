@@ -107,6 +107,7 @@ router.post("/translate", async (req, res) => {
   try {
     const input = text.trim().toLowerCase();
 
+    // word : base form, code_parent: root word, plural: is the word plural
     const [rusRows] = await db.execute(
       `SELECT word, code_parent, plural, wcase FROM dict_rus WHERE word = ? LIMIT 1`,
       [input]
@@ -127,6 +128,7 @@ router.post("/translate", async (req, res) => {
     let plural = rusRows[0].plural || 0;
     let wcase = rusRows[0].wcase || 0;
 
+    // If the Russian word has a code_parent, follow it recursively until the base/root form is found.
     while (currentCode && currentCode !== 0) {
       const [parentRows] = await db.execute(
         `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
@@ -137,6 +139,7 @@ router.post("/translate", async (req, res) => {
       currentCode = parentRows[0].code_parent;
     }
 
+    // Find matches in dict_gagauz using multiple fields:noun, verb, izafet, etc.
     let [gagRows] = await db.execute(
       `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
        WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
@@ -161,6 +164,7 @@ router.post("/translate", async (req, res) => {
       });
     }
 
+    // Prefers rows where the Russian base word appears explicitly in noun.
     const matched =
       gagRows.find((row) => {
         const nouns = row.noun ? row.noun.split(",").map((s) => s.trim()) : [];
@@ -171,6 +175,7 @@ router.post("/translate", async (req, res) => {
       ? matched.noun.split(",").map((s) => s.trim())
       : [];
     let root;
+    // Determine Gagauz Root
     if (nounForms.includes(input)) {
       root = matched.word;
     } else if (nounForms.length > 0) {
@@ -179,10 +184,12 @@ router.post("/translate", async (req, res) => {
       root = matched.word;
     }
 
+    // Apply Suffix Logic
     const lastVowel = getLastVowel(root);
     const suffix = getGagauzNounSuffix(lastVowel, plural);
     const translation = root + suffix;
 
+    // Find Synonyms
     let synonyms = [];
     if (matched.synonym) {
       synonyms = matched.synonym
@@ -216,6 +223,7 @@ router.post("/translate", async (req, res) => {
 
     synonyms = [...new Set(synonyms)].filter((s) => s !== root);
 
+    // Generate Pronunciation
     const pronunciation =
       matched.transcription || transliterateToCyrillic(translation);
 
