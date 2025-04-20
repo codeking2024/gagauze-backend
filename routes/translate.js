@@ -107,121 +107,117 @@ router.post("/translate", async (req, res) => {
   try {
     const input = text.trim().toLowerCase();
 
-    // Step 1: Lookup word in dict_rus
+    // Step 1: Lookup all rows in dict_rus
     const [rusRows] = await db.execute(
-      `SELECT word, code, code_parent, plural, wcase FROM dict_rus WHERE word = ? LIMIT 1`,
+      `SELECT word, code, code_parent, plural, wcase FROM dict_rus WHERE word = ?`,
       [input]
     );
 
     if (rusRows.length === 0) {
       return res.json({
         original: text,
-        translation: null,
-        synonyms: [],
-        pronunciation: null,
-        info: null,
+        results: [],
       });
     }
 
-    // Step 2: Climb to the topmost code_parent to get true lemma (base word)
-    let baseWord = rusRows[0].word;
-    let currentCode = rusRows[0].code_parent;
-    let plural = rusRows[0].plural || 0;
-    let wcase = rusRows[0].wcase || 0;
+    // Step 2: For each matched Russian form
+    const results = [];
 
-    while (currentCode && currentCode !== 0) {
-      const [parentRows] = await db.execute(
-        `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
-        [currentCode]
-      );
-      if (parentRows.length === 0) break;
-      baseWord = parentRows[0].word;
-      currentCode = parentRows[0].code_parent;
-    }
+    for (const rusRow of rusRows) {
+      let baseWord = rusRow.word;
+      let currentCode = rusRow.code_parent;
+      let plural = rusRow.plural || 0;
+      let wcase = rusRow.wcase || 0;
 
-    // Step 3: Try matching baseWord in Gagauz noun, etc.
-    let [gagRows] = await db.execute(
-      `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
-       WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
-       ORDER BY LENGTH(word) DESC`,
-      Array(6).fill(`%${baseWord}%`)
-    );
-
-    if (gagRows.length === 0) {
-      [gagRows] = await db.execute(
-        `SELECT word, noun, info, synonym, transcription FROM dict_gagauz WHERE word = ? LIMIT 1`,
-        [baseWord]
-      );
-    }
-
-    if (gagRows.length === 0) {
-      return res.json({
-        original: text,
-        translation: null,
-        synonyms: [],
-        pronunciation: null,
-        info: null,
-      });
-    }
-
-    // Step 4: Match baseWord inside noun list
-    const matched =
-      gagRows.find((row) => {
-        const nouns = row.noun ? row.noun.split(",").map((s) => s.trim()) : [];
-        return nouns.includes(baseWord);
-      }) || gagRows[0];
-
-    // Step 5: Determine root and apply plural suffix if needed
-    const root = matched.word;
-
-    const lastVowel = getLastVowel(root);
-    const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
-    const translation = root + suffix;
-
-    // Step 6: Synonyms (and backrefs)
-    let synonyms = [];
-    if (matched.synonym) {
-      synonyms = matched.synonym
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-    }
-
-    const [backrefRows] = await db.execute(
-      `SELECT word, synonym FROM dict_gagauz WHERE synonym LIKE ?`,
-      [`%${matched.word}%`]
-    );
-
-    for (const row of backrefRows) {
-      if (!synonyms.includes(row.word)) {
-        synonyms.push(row.word);
+      while (currentCode && currentCode !== 0) {
+        const [parentRows] = await db.execute(
+          `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
+          [currentCode]
+        );
+        if (parentRows.length === 0) break;
+        baseWord = parentRows[0].word;
+        currentCode = parentRows[0].code_parent;
       }
 
-      const extraSyns = row.synonym
-        ? row.synonym
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : [];
-      for (const syn of extraSyns) {
-        if (!synonyms.includes(syn)) {
-          synonyms.push(syn);
+      // Step 3: Try matching baseWord in Gagauz noun, etc.
+      let [gagRows] = await db.execute(
+        `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
+         WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
+         ORDER BY LENGTH(word) DESC`,
+        Array(6).fill(`%${baseWord}%`)
+      );
+
+      if (gagRows.length === 0) {
+        [gagRows] = await db.execute(
+          `SELECT word, noun, info, synonym, transcription FROM dict_gagauz WHERE word = ? LIMIT 1`,
+          [baseWord]
+        );
+      }
+
+      if (gagRows.length === 0) continue;
+
+      const matched =
+        gagRows.find((row) => {
+          const nouns = row.noun
+            ? row.noun.split(",").map((s) => s.trim())
+            : [];
+          return nouns.includes(baseWord);
+        }) || gagRows[0];
+
+      const root = matched.word;
+      const lastVowel = getLastVowel(root);
+      const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
+      const translation = root + suffix;
+
+      let synonyms = [];
+      if (matched.synonym) {
+        synonyms = matched.synonym
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+
+      const [backrefRows] = await db.execute(
+        `SELECT word, synonym FROM dict_gagauz WHERE synonym LIKE ?`,
+        [`%${matched.word}%`]
+      );
+
+      for (const row of backrefRows) {
+        if (!synonyms.includes(row.word)) {
+          synonyms.push(row.word);
+        }
+
+        const extraSyns = row.synonym
+          ? row.synonym
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [];
+        for (const syn of extraSyns) {
+          if (!synonyms.includes(syn)) {
+            synonyms.push(syn);
+          }
         }
       }
+
+      synonyms = [...new Set(synonyms)].filter((s) => s !== root);
+      const pronunciation =
+        matched.transcription || transliterateToCyrillic(translation);
+
+      results.push({
+        translation,
+        synonyms,
+        pronunciation,
+        info: matched.info || null,
+        base: baseWord,
+        plural,
+        wcase,
+      });
     }
-
-    synonyms = [...new Set(synonyms)].filter((s) => s !== root);
-
-    // Step 7: Pronunciation
-    const pronunciation =
-      matched.transcription || transliterateToCyrillic(translation);
 
     return res.json({
       original: text,
-      translation,
-      synonyms,
-      pronunciation,
-      info: matched.info || null,
+      results,
     });
   } catch (error) {
     console.error("Translation error:", error);
