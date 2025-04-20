@@ -14,7 +14,6 @@ const getLastVowel = (word) => {
 // Simplified suffix rules based on plural and nominative case
 const getGagauzNounSuffix = (vowel, plural) => {
   if (!vowel) return "";
-
   const pluralSuffix = {
     a: "lar",
     ä: "lär",
@@ -100,17 +99,26 @@ router.post("/translate", async (req, res) => {
         return nouns.includes(baseWord);
       }) || gagRows[0];
 
+    // Step 5: Determine root Gagauz word
     const nounForms = matched.noun
       ? matched.noun.split(",").map((s) => s.trim())
       : [];
-    const root = nounForms[0] || matched.word;
+    let root;
 
-    // Step 5: Construct translation using suffix rules
+    if (nounForms.includes(input)) {
+      root = matched.word; // Use real Gagauz word
+    } else if (nounForms.length > 0) {
+      root = nounForms[0];
+    } else {
+      root = matched.word;
+    }
+
+    // Step 6: Construct translation using suffix rules
     const lastVowel = getLastVowel(root);
     const suffix = getGagauzNounSuffix(lastVowel, plural);
     const translation = root + suffix;
 
-    // Step 6: Collect synonyms
+    // Step 7: Collect synonyms
     let synonyms = [];
     if (matched.synonym) {
       synonyms = matched.synonym
@@ -142,7 +150,7 @@ router.post("/translate", async (req, res) => {
       }
     }
 
-    synonyms = [...new Set(synonyms)].filter((s) => s !== matched.word);
+    synonyms = [...new Set(synonyms)].filter((s) => s !== root);
 
     return res.json({
       original: text,
