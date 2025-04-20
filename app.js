@@ -1,19 +1,17 @@
+require("dotenv").config();
 const express = require("express");
+const bodyParser = require("body-parser");
 const cors = require("cors");
-const sequelize = require("./models");
-const translateRouter = require("./routes/translate");
 
 const app = express();
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
-app.use(express.json());
+app.use(bodyParser.json());
 
-app.use("/api", translateRouter);
+const translateRoute = require("./routes/translate");
+app.use("/api", translateRoute);
 
-// Connect to database
-sequelize
-  .authenticate()
-  .then(() => console.log("Database connected"))
-  .catch((err) => console.error("Unable to connect:", err));
-
-app.listen(4000, () => console.log("Server running on port 4000"));
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});

@@ -150,6 +150,22 @@ const conjugateVerbPresent = (word, person = "third", plural = false) => {
   return word + conjugation;
 };
 
+function applyGrammarRules(rusWord, gagauzWord) {
+  if (!gagauzWord || !gagauzWord.word) return null;
+
+  let result = gagauzWord.word; // Use main word
+
+  if (rusWord.plural === 1) {
+    result += "лар"; // Gagauz plural example
+  }
+
+  if (rusWord.wcase === 2) {
+    result += "нын"; // Example genitive
+  }
+
+  return result;
+}
+
 // Export all functions
 module.exports = {
   izafetAddVowel,
@@ -161,4 +177,5 @@ module.exports = {
   applyPlural,
   conjugateVerbPresent,
   getLastVowel,
+  applyGrammarRules,
 };

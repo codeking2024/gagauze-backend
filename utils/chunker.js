@@ -1,12 +1,10 @@
-// utils/chunker.js
-
-/**
- * Teilt einen Text in sinnvolle Wörter auf
- * Berücksichtigt Satzzeichen und Leerzeichen.
- */
-exports.chunkText = (text) => {
+function chunkText(text) {
   return text
-    .toLowerCase()
-    .split(/[\s.,!?;:"'()\-—–]+/)
-    .filter(Boolean);
+    .split(" ")
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0);
+}
+
+module.exports = {
+  chunkText,
 };
