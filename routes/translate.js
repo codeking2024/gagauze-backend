@@ -1,5 +1,5 @@
 const express = require("express");
-const { translateText } = require("../controllers/translationController");
+const { translateText } = require("../controllers/translateController");
 
 const router = express.Router();
 
