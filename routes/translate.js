@@ -11,6 +11,76 @@ const getLastVowel = (word) => {
   return null;
 };
 
+// Helper function to transliterate Latin Gagauz to Cyrillic-style pronunciation
+const transliterateToCyrillic = (text) => {
+  const map = {
+    Ä: "Ӓ",
+    ä: "ӓ",
+    B: "Б",
+    b: "б",
+    V: "В",
+    v: "в",
+    G: "Г",
+    g: "г",
+    D: "Д",
+    d: "д",
+    E: "Е",
+    e: "е",
+    J: "Ж",
+    j: "ж",
+    C: "Дж",
+    c: "дж",
+    Z: "З",
+    z: "з",
+    İ: "И",
+    i: "и",
+    Y: "Й",
+    y: "й",
+    K: "К",
+    k: "к",
+    L: "Л",
+    l: "л",
+    M: "М",
+    m: "м",
+    N: "Н",
+    n: "н",
+    O: "О",
+    o: "о",
+    Ö: "Ӧ",
+    ö: "ӧ",
+    P: "П",
+    p: "п",
+    R: "Р",
+    r: "р",
+    S: "С",
+    s: "с",
+    T: "Т",
+    t: "т",
+    U: "У",
+    u: "у",
+    Ü: "Ӱ",
+    ü: "ӱ",
+    F: "Ф",
+    f: "ф",
+    H: "Х",
+    h: "х",
+    Ţ: "Ц",
+    ţ: "ц",
+    Ç: "Ч",
+    ç: "ч",
+    Ş: "Ш",
+    ş: "ш",
+    I: "Ы",
+    ı: "ы",
+    Ê: "Э",
+    ê: "э",
+  };
+  return text
+    .split("")
+    .map((ch) => map[ch] || ch)
+    .join("");
+};
+
 // Simplified suffix rules based on plural and nominative case
 const getGagauzNounSuffix = (vowel, plural) => {
   if (!vowel) return "";
@@ -37,7 +107,6 @@ router.post("/translate", async (req, res) => {
   try {
     const input = text.trim().toLowerCase();
 
-    // Step 1: Lookup Russian base word
     const [rusRows] = await db.execute(
       `SELECT word, code_parent, plural, wcase FROM dict_rus WHERE word = ? LIMIT 1`,
       [input]
@@ -48,11 +117,11 @@ router.post("/translate", async (req, res) => {
         original: text,
         translation: null,
         synonyms: [],
+        pronunciation: null,
         info: null,
       });
     }
 
-    // Step 2: Resolve base form through code_parent
     let baseWord = rusRows[0].word;
     let currentCode = rusRows[0].code_parent;
     let plural = rusRows[0].plural || 0;
@@ -68,9 +137,8 @@ router.post("/translate", async (req, res) => {
       currentCode = parentRows[0].code_parent;
     }
 
-    // Step 3: Try matching baseWord in dict_gagauz
     let [gagRows] = await db.execute(
-      `SELECT word, noun, info, synonym FROM dict_gagauz
+      `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
        WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
        ORDER BY LENGTH(word) DESC`,
       Array(6).fill(`%${baseWord}%`)
@@ -78,7 +146,7 @@ router.post("/translate", async (req, res) => {
 
     if (gagRows.length === 0) {
       [gagRows] = await db.execute(
-        `SELECT word, noun, info, synonym FROM dict_gagauz WHERE word = ? LIMIT 1`,
+        `SELECT word, noun, info, synonym, transcription FROM dict_gagauz WHERE word = ? LIMIT 1`,
         [baseWord]
       );
     }
@@ -88,37 +156,33 @@ router.post("/translate", async (req, res) => {
         original: text,
         translation: null,
         synonyms: [],
+        pronunciation: null,
         info: null,
       });
     }
 
-    // Step 4: Best match by comparing baseWord in noun list
     const matched =
       gagRows.find((row) => {
         const nouns = row.noun ? row.noun.split(",").map((s) => s.trim()) : [];
         return nouns.includes(baseWord);
       }) || gagRows[0];
 
-    // Step 5: Determine root Gagauz word
     const nounForms = matched.noun
       ? matched.noun.split(",").map((s) => s.trim())
       : [];
     let root;
-
     if (nounForms.includes(input)) {
-      root = matched.word; // Use real Gagauz word
+      root = matched.word;
     } else if (nounForms.length > 0) {
       root = nounForms[0];
     } else {
       root = matched.word;
     }
 
-    // Step 6: Construct translation using suffix rules
     const lastVowel = getLastVowel(root);
     const suffix = getGagauzNounSuffix(lastVowel, plural);
     const translation = root + suffix;
 
-    // Step 7: Collect synonyms
     let synonyms = [];
     if (matched.synonym) {
       synonyms = matched.synonym
@@ -152,10 +216,14 @@ router.post("/translate", async (req, res) => {
 
     synonyms = [...new Set(synonyms)].filter((s) => s !== root);
 
+    const pronunciation =
+      matched.transcription || transliterateToCyrillic(translation);
+
     return res.json({
       original: text,
       translation,
       synonyms,
+      pronunciation,
       info: matched.info || null,
     });
   } catch (error) {
