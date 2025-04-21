@@ -5,14 +5,56 @@ const {
   getGagauzNounSuffix,
 } = require("../utils/grammar");
 
+function sanitizeText(text) {
+  const words = text.trim().split(/\s+/).slice(0, 4);
+  return words.join(" ").slice(0, 100);
+}
+
+function generateShortCode(length = 5) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  return Array.from({ length }, () =>
+    chars.charAt(Math.floor(Math.random() * chars.length))
+  ).join("");
+}
+
+async function getOrCreateShortLink(text, direction = "ru") {
+  const [existing] = await db.execute(
+    `SELECT code FROM tlink WHERE text = ? LIMIT 1`,
+    [text]
+  );
+
+  if (existing.length > 0) {
+    return existing[0].code;
+  }
+
+  let code;
+  let found = true;
+  while (found) {
+    code = generateShortCode();
+    const [check] = await db.execute(
+      `SELECT id FROM tlink WHERE code = ? LIMIT 1`,
+      [code]
+    );
+    found = check.length > 0;
+  }
+
+  await db.execute(
+    `INSERT INTO tlink (code, direction, text) VALUES (?, ?, ?)`,
+    [code, direction, text]
+  );
+
+  return code;
+}
+
 const tranlateRussianToGagauz = async (req, res) => {
-  const { text } = req.body;
+  let { text } = req.body;
   if (!text) {
     return res.status(400).json({ error: "Missing text input" });
   }
 
   try {
-    const input = text.trim().toLowerCase();
+    text = sanitizeText(text);
+    const input = text.toLowerCase();
 
     // Step 1: Lookup all rows in dict_rus
     const [rusRows] = await db.execute(
@@ -21,13 +63,14 @@ const tranlateRussianToGagauz = async (req, res) => {
     );
 
     if (rusRows.length === 0) {
+      const code = await getOrCreateShortLink(text, "ru");
       return res.json({
         original: text,
         results: [],
+        code,
       });
     }
 
-    // Step 2: For each matched Russian form
     const results = [];
 
     for (const rusRow of rusRows) {
@@ -46,11 +89,10 @@ const tranlateRussianToGagauz = async (req, res) => {
         currentCode = parentRows[0].code_parent;
       }
 
-      // Step 3: Try matching baseWord in Gagauz noun, etc.
       let [gagRows] = await db.execute(
         `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
-           WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
-           ORDER BY LENGTH(word) DESC`,
+         WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
+         ORDER BY LENGTH(word) DESC`,
         Array(6).fill(`%${baseWord}%`)
       );
 
@@ -93,7 +135,6 @@ const tranlateRussianToGagauz = async (req, res) => {
         if (!synonyms.includes(row.word)) {
           synonyms.push(row.word);
         }
-
         const extraSyns = row.synonym
           ? row.synonym
               .split(",")
@@ -122,9 +163,12 @@ const tranlateRussianToGagauz = async (req, res) => {
       });
     }
 
+    const code = await getOrCreateShortLink(text, "ru");
+
     return res.json({
       original: text,
       results,
+      code,
     });
   } catch (error) {
     console.error("Translation error:", error);
