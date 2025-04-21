@@ -14,13 +14,100 @@ const vowelSuffixesIzafet = {
   ü: "sü",
 };
 
-// Last vowel extraction
+// Helper: Get last vowel for suffix logic
 const getLastVowel = (word) => {
-  const vowels = "aȇıäeioöuü";
+  const vowels = ["a", "ä", "e", "i", "ı", "o", "ö", "u", "ü"];
   for (let i = word.length - 1; i >= 0; i--) {
     if (vowels.includes(word[i])) return word[i];
   }
-  return "";
+  return null;
+};
+
+// Helper: Latin → Cyrillic transcription for Gagauz
+const transliterateToCyrillic = (text) => {
+  const map = {
+    Ä: "Ӓ",
+    ä: "ӓ",
+    B: "Б",
+    b: "б",
+    V: "В",
+    v: "в",
+    G: "Г",
+    g: "г",
+    D: "Д",
+    d: "д",
+    E: "Е",
+    e: "е",
+    J: "Ж",
+    j: "ж",
+    C: "Дж",
+    c: "дж",
+    Z: "З",
+    z: "з",
+    İ: "И",
+    i: "и",
+    Y: "Й",
+    y: "й",
+    K: "К",
+    k: "к",
+    L: "Л",
+    l: "л",
+    M: "М",
+    m: "м",
+    N: "Н",
+    n: "н",
+    O: "О",
+    o: "о",
+    Ö: "Ӧ",
+    ö: "ӧ",
+    P: "П",
+    p: "п",
+    R: "Р",
+    r: "р",
+    S: "С",
+    s: "с",
+    T: "Т",
+    t: "т",
+    U: "У",
+    u: "у",
+    Ü: "Ӱ",
+    ü: "ӱ",
+    F: "Ф",
+    f: "ф",
+    H: "Х",
+    h: "х",
+    Ţ: "Ц",
+    ţ: "ц",
+    Ç: "Ч",
+    ç: "ч",
+    Ş: "Ш",
+    ş: "ш",
+    I: "Ы",
+    ı: "ы",
+    Ê: "Э",
+    ê: "э",
+  };
+  return text
+    .split("")
+    .map((ch) => map[ch] || ch)
+    .join("");
+};
+
+// Helper: Get plural suffix if applicable
+const getGagauzNounSuffix = (vowel, plural, wcase) => {
+  if (!vowel) return "";
+  const pluralSuffix = {
+    a: "lar",
+    ä: "lär",
+    e: "lär",
+    i: "lär",
+    ı: "lar",
+    o: "lar",
+    u: "lar",
+    ö: "lär",
+    ü: "lär",
+  };
+  return plural ? pluralSuffix[vowel] || "lar" : "";
 };
 
 // Izafet vowel addition logic
@@ -178,4 +265,6 @@ module.exports = {
   conjugateVerbPresent,
   getLastVowel,
   applyGrammarRules,
+  transliterateToCyrillic,
+  getGagauzNounSuffix,
 };
