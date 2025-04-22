@@ -3,7 +3,9 @@ const {
   getLastVowel,
   transliterateToCyrillic,
   getGagauzNounSuffix,
+  getVowelGroup,
 } = require("../utils/grammar");
+const { rules } = require("../utils/rule");
 const axios = require("axios");
 
 function sanitizeText(text) {
@@ -47,6 +49,60 @@ async function getOrCreateShortLink(text, direction = "ru") {
   return code;
 }
 
+function convertVerb(
+  root,
+  {
+    verbType = 1, // 1–4; use rusRow.type
+    form = "positive", // "positive" or "negative"
+    time = "present", // "present", "pasttense", "longpasttense", "future", "futuresimple", "conditional"
+    nakl = false, // imperative mood
+    face = 1, // 1 = I, 2 = you, 3 = he/she/it
+    plural = 0, // 0 = singular, 1 = plural
+  }
+) {
+  const vowel = getLastVowel(root);
+  const vowelGroup = getVowelGroup(vowel);
+  if (!vowelGroup) return root;
+
+  const mood = nakl ? "imperative" : time;
+  const ruleSet = rules?.[form]?.[mood]?.[verbType]?.[vowelGroup];
+  if (!ruleSet) return root;
+
+  const personRule = ruleSet[face];
+  if (!personRule) return root;
+
+  const suffix = personRule[plural ? "plural" : "singular"];
+  if (!suffix) return root;
+
+  return root + (Array.isArray(suffix) ? suffix[0] : suffix);
+}
+
+function convertNoun(
+  root,
+  {
+    wcase = 0,
+    plural = 0,
+    rule = null,
+    triggerRule = null,
+    triggerTranslate = null,
+    time = null,
+  }
+) {
+  if (!root || typeof root !== "string") return root;
+
+  const lastVowel = getLastVowel(root);
+  const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
+
+  let prefix = "";
+
+  // Optional logic for prefixing (like negation or future modifiers)
+  if (triggerRule?.toLowerCase().includes("negative") && triggerTranslate) {
+    prefix = triggerTranslate + " ";
+  }
+
+  return prefix + root + suffix;
+}
+
 const tranlateRussianToGagauz = async (req, res) => {
   let { text } = req.body;
   if (!text) {
@@ -58,7 +114,7 @@ const tranlateRussianToGagauz = async (req, res) => {
     const input = text.toLowerCase();
 
     const [rusRows] = await db.execute(
-      `SELECT word, code, code_parent, plural, wcase FROM dict_rus WHERE word = ?`,
+      `SELECT id, word, type, code, gender, time, plural, code_parent, wcase, face, nakl FROM dict_rus WHERE word = ?`,
       [input]
     );
 
@@ -78,6 +134,18 @@ const tranlateRussianToGagauz = async (req, res) => {
       let currentCode = rusRow.code_parent;
       let plural = rusRow.plural || 0;
       let wcase = rusRow.wcase || 0;
+      let time = rusRow.time || null;
+      let face = rusRow.face || null;
+      let nakl = rusRow.nakl || null;
+      const verbType = rusRow.type;
+
+      let rule;
+      let isTrigger = false;
+
+      if (nakl) {
+        rule = "VERB_IMPERATIVE";
+        isTrigger = true;
+      }
 
       while (currentCode && currentCode !== 0) {
         const [parentRows] = await db.execute(
@@ -88,25 +156,17 @@ const tranlateRussianToGagauz = async (req, res) => {
         baseWord = parentRows[0].word;
         currentCode = parentRows[0].code_parent;
       }
-      console.log(baseWord);
+
       let [gagRows] = await db.execute(
-        `SELECT word, noun, info, synonym, transcription, verb FROM dict_gagauz
+        `SELECT id, noun, verb, adverb, izafet, other, word, type, rule, stress, transcription, synonym, info FROM dict_gagauz
          WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
          ORDER BY LENGTH(word) DESC`,
         Array(6).fill(`%${baseWord}%`)
       );
 
-      if (!gagRows.length) {
-        [gagRows] = await db.execute(
-          `SELECT word, noun, info, synonym, transcription, verb FROM dict_gagauz WHERE word = ? LIMIT 1`,
-          [baseWord]
-        );
-      }
-      console.log(gagRows);
-
       if (!gagRows.length) continue;
+
       const matched =
-        // exact noun match with most synonyms
         gagRows
           .filter((row) => {
             const nouns =
@@ -118,26 +178,53 @@ const tranlateRussianToGagauz = async (req, res) => {
               (b.synonym?.split(",").length || 0) -
               (a.synonym?.split(",").length || 0)
           )[0] ||
-        // fallback to partial verb match
-        // gagRows
-        //   .filter((row) => {
-        //     const verbs =
-        //       row.verb?.split(",").map((v) => v.trim().toLowerCase()) || [];
-        //     return verbs.includes(baseWord.toLowerCase());
-        //   })
-        //   .sort(
-        //     (a, b) =>
-        //       (b.synonym?.split(",").length || 0) -
-        //       (a.synonym?.split(",").length || 0)
-        //   )[0] ||
+        gagRows
+          .filter((row) => {
+            const verbs =
+              row.verb?.split(",").map((v) => v.trim().toLowerCase()) || [];
+            return verbs.includes(baseWord.toLowerCase());
+          })
+          .sort(
+            (a, b) =>
+              (b.synonym?.split(",").length || 0) -
+              (a.synonym?.split(",").length || 0)
+          )[0] ||
         null;
 
       if (!matched) continue;
 
       const root = matched.word;
-      const lastVowel = getLastVowel(root);
-      const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
-      const translation = root + suffix;
+      let form = "positive";
+      if (rule?.toLowerCase().includes("negative")) {
+        form = "negative";
+      }
+
+      const tenseMap = {
+        1: "present",
+        2: "pasttense",
+        3: "future",
+        4: "longpasttense",
+      };
+      let translation = root;
+      if (verbType === 2 && matched.rule) {
+        translation = convertVerb(root, {
+          verbType,
+          form,
+          time: tenseMap[time] || "present",
+          face,
+          plural,
+          nakl: !!nakl,
+        });
+      } else if (verbType === 1) {
+        translation = convertNoun(root, {
+          wcase,
+          plural,
+          rule: matched.rule,
+          triggerRule: rule,
+          triggerTranslate: matched.translate,
+          time,
+        });
+      }
 
       let synonyms = [];
       if (matched.synonym) {
@@ -159,6 +246,10 @@ const tranlateRussianToGagauz = async (req, res) => {
         base: baseWord,
         plural,
         wcase,
+        face,
+        time,
+        nakl,
+        rule: matched.rule || null,
       });
     }
 

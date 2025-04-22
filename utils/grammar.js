@@ -23,6 +23,18 @@ const getLastVowel = (word) => {
   return null;
 };
 
+// Helper: Get vowel harmony group
+function getVowelGroup(vowel) {
+  const groups = {
+    "a,ȇ,ı,o,u": ["a", "ȇ", "ı", "o", "u"],
+    "ä,e,i,ö,ü": ["ä", "e", "i", "ö", "ü"],
+  };
+  for (const [key, group] of Object.entries(groups)) {
+    if (group.includes(vowel)) return key;
+  }
+  return null;
+}
+
 // Helper: Latin → Cyrillic transcription for Gagauz
 const transliterateToCyrillic = (text) => {
   const map = {
@@ -95,7 +107,6 @@ const transliterateToCyrillic = (text) => {
 
 // Helper: Get plural suffix if applicable
 const getGagauzNounSuffix = (vowel, plural, wcase) => {
-  if (!vowel) return "";
   const pluralSuffix = {
     a: "lar",
     ä: "lär",
@@ -107,7 +118,65 @@ const getGagauzNounSuffix = (vowel, plural, wcase) => {
     ö: "lär",
     ü: "lär",
   };
-  return plural ? pluralSuffix[vowel] || "lar" : "";
+
+  const caseSuffixes = {
+    2: {
+      e: "nin",
+      a: "nın",
+      o: "nun",
+      u: "nun",
+      ä: "nin",
+      ö: "nün",
+      ü: "nün",
+      i: "nin",
+      ı: "nın",
+    }, // Genitive
+    3: {
+      e: "ge",
+      a: "ğa",
+      o: "ğa",
+      u: "ğa",
+      ä: "gä",
+      ö: "gä",
+      ü: "gü",
+      i: "ge",
+      ı: "ğa",
+    }, // Dative
+    4: {
+      e: "ni",
+      a: "nı",
+      o: "nu",
+      u: "nu",
+      ä: "ni",
+      ö: "nü",
+      ü: "nü",
+      i: "ni",
+      ı: "nı",
+    }, // Accusative
+    6: {
+      e: "de",
+      a: "da",
+      o: "da",
+      u: "da",
+      ä: "dä",
+      ö: "dä",
+      ü: "dä",
+      i: "de",
+      ı: "da",
+    }, // Prepositional
+  };
+
+  let suffix = "";
+
+  if (plural) {
+    suffix += pluralSuffix[vowel] || "lar";
+  }
+
+  if (wcase > 0 && caseSuffixes[wcase]) {
+    suffix += caseSuffixes[wcase][vowel] || "";
+  }
+
+  return suffix;
 };
 
 // Izafet vowel addition logic
@@ -264,6 +333,7 @@ module.exports = {
   applyPlural,
   conjugateVerbPresent,
   getLastVowel,
+  getVowelGroup,
   applyGrammarRules,
   transliterateToCyrillic,
   getGagauzNounSuffix,
