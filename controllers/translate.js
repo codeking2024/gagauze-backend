@@ -208,5 +208,4 @@ async function getPosTagsFromUdpipe(text) {
 
 module.exports = {
   tranlateRussianToGagauz,
-  translateSentence,
 };
