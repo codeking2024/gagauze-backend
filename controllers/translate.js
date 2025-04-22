@@ -4,6 +4,7 @@ const {
   transliterateToCyrillic,
   getGagauzNounSuffix,
 } = require("../utils/grammar");
+const axios = require("axios");
 
 function sanitizeText(text) {
   const words = text.trim().split(/\s+/).slice(0, 4);
@@ -56,7 +57,6 @@ const tranlateRussianToGagauz = async (req, res) => {
     text = sanitizeText(text);
     const input = text.toLowerCase();
 
-    // Step 1: Lookup all rows in dict_rus
     const [rusRows] = await db.execute(
       `SELECT word, code, code_parent, plural, wcase FROM dict_rus WHERE word = ?`,
       [input]
@@ -84,34 +84,49 @@ const tranlateRussianToGagauz = async (req, res) => {
           `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
           [currentCode]
         );
-        if (parentRows.length === 0) break;
+        if (!parentRows.length) break;
         baseWord = parentRows[0].word;
         currentCode = parentRows[0].code_parent;
       }
-
       let [gagRows] = await db.execute(
-        `SELECT word, noun, info, synonym, transcription FROM dict_gagauz
+        `SELECT word, noun, info, synonym, transcription, verb FROM dict_gagauz
          WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
          ORDER BY LENGTH(word) DESC`,
         Array(6).fill(`%${baseWord}%`)
       );
 
-      if (gagRows.length === 0) {
+      if (!gagRows.length) {
         [gagRows] = await db.execute(
-          `SELECT word, noun, info, synonym, transcription FROM dict_gagauz WHERE word = ? LIMIT 1`,
+          `SELECT word, noun, info, synonym, transcription, verb FROM dict_gagauz WHERE word = ? LIMIT 1`,
           [baseWord]
         );
       }
 
-      if (gagRows.length === 0) continue;
-
+      if (!gagRows.length) continue;
       const matched =
-        gagRows.find((row) => {
-          const nouns = row.noun
-            ? row.noun.split(",").map((s) => s.trim())
-            : [];
-          return nouns.includes(baseWord);
-        }) || gagRows[0];
+        // exact noun match with most synonyms (move this earlier!)
+        gagRows
+          .filter((row) => {
+            const nouns =
+              row.noun?.split(",").map((s) => s.trim().toLowerCase()) || [];
+            return nouns.includes(baseWord.toLowerCase());
+          })
+          .sort(
+            (a, b) =>
+              (b.synonym?.split(",").length || 0) -
+              (a.synonym?.split(",").length || 0)
+          )[0] ||
+        // fallback to partial verb match
+        gagRows
+          .filter((row) =>
+            row.verb?.toLowerCase().includes(baseWord.toLowerCase())
+          )
+          .sort(
+            (a, b) =>
+              (b.synonym?.split(",").length || 0) -
+              (a.synonym?.split(",").length || 0)
+          )[0] ||
+        gagRows[0];
 
       const root = matched.word;
       const lastVowel = getLastVowel(root);
@@ -124,28 +139,6 @@ const tranlateRussianToGagauz = async (req, res) => {
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-      }
-
-      const [backrefRows] = await db.execute(
-        `SELECT word, synonym FROM dict_gagauz WHERE synonym LIKE ?`,
-        [`%${matched.word}%`]
-      );
-
-      for (const row of backrefRows) {
-        if (!synonyms.includes(row.word)) {
-          synonyms.push(row.word);
-        }
-        const extraSyns = row.synonym
-          ? row.synonym
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : [];
-        for (const syn of extraSyns) {
-          if (!synonyms.includes(syn)) {
-            synonyms.push(syn);
-          }
-        }
       }
 
       synonyms = [...new Set(synonyms)].filter((s) => s !== root);
@@ -176,6 +169,44 @@ const tranlateRussianToGagauz = async (req, res) => {
   }
 };
 
+async function getPosTagsFromUdpipe(text) {
+  const formData = new URLSearchParams();
+  formData.append("data", text);
+  formData.append("model", "russian-syntagrus-ud-2.5-191206");
+  formData.append("tokenizer", "");
+  formData.append("tagger", "");
+  formData.append("parser", "");
+
+  try {
+    const response = await axios.post(
+      "https://lindat.mff.cuni.cz/services/udpipe/api/process",
+      formData,
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+    const conllu = response.data.result;
+    const lines = conllu
+      .split("\n")
+      .filter((line) => line && !line.startsWith("#"));
+    const tokens = lines.map((line) => {
+      const parts = line.split("\t");
+      return {
+        index: parseInt(parts[0], 10),
+        text: parts[1],
+        lemma: parts[2],
+        upos: parts[3], // NOUN, VERB, ADP, etc.
+        head: parseInt(parts[6], 10),
+        dep: parts[7],
+      };
+    });
+
+    return tokens;
+  } catch (err) {
+    console.error("UDPipe POS tagging failed:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   tranlateRussianToGagauz,
+  translateSentence,
 };

@@ -1,6 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const { tranlateRussianToGagauz } = require("../controllers/translate");
+const {
+  tranlateRussianToGagauz,
+  translateSentence,
+} = require("../controllers/translate");
 const { resolveShortLink } = require("../controllers/linkController");
 const { addSuggestion } = require("../controllers/suggestionController");
 
