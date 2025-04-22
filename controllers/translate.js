@@ -88,6 +88,7 @@ const tranlateRussianToGagauz = async (req, res) => {
         baseWord = parentRows[0].word;
         currentCode = parentRows[0].code_parent;
       }
+      console.log(baseWord);
       let [gagRows] = await db.execute(
         `SELECT word, noun, info, synonym, transcription, verb FROM dict_gagauz
          WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
@@ -101,10 +102,11 @@ const tranlateRussianToGagauz = async (req, res) => {
           [baseWord]
         );
       }
+      console.log(gagRows);
 
       if (!gagRows.length) continue;
       const matched =
-        // exact noun match with most synonyms (move this earlier!)
+        // exact noun match with most synonyms
         gagRows
           .filter((row) => {
             const nouns =
@@ -117,16 +119,20 @@ const tranlateRussianToGagauz = async (req, res) => {
               (a.synonym?.split(",").length || 0)
           )[0] ||
         // fallback to partial verb match
-        gagRows
-          .filter((row) =>
-            row.verb?.toLowerCase().includes(baseWord.toLowerCase())
-          )
-          .sort(
-            (a, b) =>
-              (b.synonym?.split(",").length || 0) -
-              (a.synonym?.split(",").length || 0)
-          )[0] ||
-        gagRows[0];
+        // gagRows
+        //   .filter((row) => {
+        //     const verbs =
+        //       row.verb?.split(",").map((v) => v.trim().toLowerCase()) || [];
+        //     return verbs.includes(baseWord.toLowerCase());
+        //   })
+        //   .sort(
+        //     (a, b) =>
+        //       (b.synonym?.split(",").length || 0) -
+        //       (a.synonym?.split(",").length || 0)
+        //   )[0] ||
+        null;
+
+      if (!matched) continue;
 
       const root = matched.word;
       const lastVowel = getLastVowel(root);
@@ -153,6 +159,14 @@ const tranlateRussianToGagauz = async (req, res) => {
         base: baseWord,
         plural,
         wcase,
+      });
+    }
+
+    if (!results.length) {
+      return res.json({
+        original: text,
+        results: [],
+        code: "",
       });
     }
 
