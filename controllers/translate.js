@@ -49,6 +49,28 @@ async function getOrCreateShortLink(text, direction = "ru") {
   return code;
 }
 
+function getVerbStem(root) {
+  let base = root;
+
+  // Remove final "maa" or "mää"
+  if (base.endsWith("maa") || base.endsWith("mää")) {
+    base = base.slice(0, -3);
+  }
+
+  // Convert "t" to "d" if preceded by a vowel (e.g., "git" → "gid")
+  const vowels = ["a", "ä", "e", "i", "ı", "o", "ö", "u", "ü", "ȇ"];
+  const len = base.length;
+  if (len >= 2) {
+    const lastChar = base[len - 1];
+    const prevChar = base[len - 2];
+    if (lastChar === "t" && vowels.includes(prevChar)) {
+      base = base.slice(0, -1) + "d";
+    }
+  }
+
+  return base;
+}
+
 function convertVerb(
   root,
   {
@@ -60,21 +82,22 @@ function convertVerb(
     plural = 0, // 0 = singular, 1 = plural
   }
 ) {
-  const vowel = getLastVowel(root);
+  const stem = getVerbStem(root); // Apply PHP-equivalent preprocessing
+  const vowel = getLastVowel(stem);
   const vowelGroup = getVowelGroup(vowel);
-  if (!vowelGroup) return root;
+  if (!vowelGroup) return stem;
 
   const mood = nakl ? "imperative" : time;
   const ruleSet = rules?.[form]?.[mood]?.[verbType]?.[vowelGroup];
-  if (!ruleSet) return root;
+  if (!ruleSet) return stem;
 
   const personRule = ruleSet[face];
-  if (!personRule) return root;
+  if (!personRule) return stem;
 
   const suffix = personRule[plural ? "plural" : "singular"];
-  if (!suffix) return root;
+  if (!suffix) return stem;
 
-  return root + (Array.isArray(suffix) ? suffix[0] : suffix);
+  return stem + (Array.isArray(suffix) ? suffix[0] : suffix);
 }
 
 function convertNoun(
@@ -105,14 +128,11 @@ function convertNoun(
 
 const tranlateRussianToGagauz = async (req, res) => {
   let { text } = req.body;
-  if (!text) {
-    return res.status(400).json({ error: "Missing text input" });
-  }
+  if (!text) return res.status(400).json({ error: "Missing text input" });
 
   try {
     text = sanitizeText(text);
     const input = text.toLowerCase();
-
     const [rusRows] = await db.execute(
       `SELECT id, word, type, code, gender, time, plural, code_parent, wcase, face, nakl FROM dict_rus WHERE word = ?`,
       [input]
@@ -120,34 +140,23 @@ const tranlateRussianToGagauz = async (req, res) => {
 
     if (rusRows.length === 0) {
       const code = await getOrCreateShortLink(text, "ru");
-      return res.json({
-        original: text,
-        results: [],
-        code,
-      });
+      return res.json({ original: text, results: [], code });
     }
 
     const results = [];
-
     for (const rusRow of rusRows) {
-      let baseWord = rusRow.word;
-      let currentCode = rusRow.code_parent;
-      let plural = rusRow.plural || 0;
-      let wcase = rusRow.wcase || 0;
-      let time = rusRow.time || null;
-      let face = rusRow.face || null;
-      let nakl = rusRow.nakl || null;
-      const verbType = rusRow.type;
+      let {
+        word: baseWord,
+        code_parent: currentCode,
+        plural = 0,
+        wcase = 0,
+        time = null,
+        face = null,
+        nakl = null,
+        type: verbType,
+      } = rusRow;
 
-      let rule;
-      let isTrigger = false;
-
-      if (nakl && time === 0) {
-        // only if no tense is set
-        rule = "VERB_IMPERATIVE";
-        isTrigger = true;
-      }
-
+      let rule = nakl && time === 0 ? "VERB_IMPERATIVE" : null;
       while (currentCode && currentCode !== 0) {
         const [parentRows] = await db.execute(
           `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
@@ -167,55 +176,32 @@ const tranlateRussianToGagauz = async (req, res) => {
 
       if (!gagRows.length) continue;
 
-      const matched =
-        gagRows
-          .filter((row) => {
-            const nouns =
-              row.noun?.split(",").map((s) => s.trim().toLowerCase()) || [];
-            return nouns.includes(baseWord.toLowerCase());
-          })
-          .sort(
-            (a, b) =>
-              (b.synonym?.split(",").length || 0) -
-              (a.synonym?.split(",").length || 0)
-          )[0] ||
-        gagRows
-          .filter((row) => {
-            const verbs =
-              row.verb?.split(",").map((v) => v.trim().toLowerCase()) || [];
-            return verbs.includes(baseWord.toLowerCase());
-          })
-          .sort(
-            (a, b) =>
-              (b.synonym?.split(",").length || 0) -
-              (a.synonym?.split(",").length || 0)
-          )[0] ||
-        null;
-
+      const matched = selectBestMatch(gagRows, baseWord);
       if (!matched) continue;
 
       const root = matched.word;
-      let form = "positive";
-      if (rule?.toLowerCase().includes("negative")) {
-        form = "negative";
-      }
 
+      const form = rule?.toLowerCase().includes("negative")
+        ? "negative"
+        : "positive";
       const tenseMap = {
-        1: "present",
-        2: "pasttense",
-        3: "future",
-        4: "longpasttense",
+        2: "present", // ✅ map PHP `time=2` to PRESENT for verbs like "Иду"
+        3: "pasttense",
+        4: "future",
+        5: "longpasttense",
       };
+
       let translation = root;
-      if (verbType === 2 && matched.rule) {
+      if (verbType === 2) {
         translation = convertVerb(root, {
           verbType,
           form,
           time: tenseMap[time] || "present",
-          face,
+          face: face || 1,
           plural,
           nakl: !!nakl,
         });
+        console.log(translation);
       } else if (verbType === 1) {
         translation = convertNoun(root, {
           wcase,
@@ -227,15 +213,14 @@ const tranlateRussianToGagauz = async (req, res) => {
         });
       }
 
-      let synonyms = [];
-      if (matched.synonym) {
-        synonyms = matched.synonym
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-      }
-
-      synonyms = [...new Set(synonyms)].filter((s) => s !== root);
+      const synonyms = [
+        ...new Set(
+          (matched.synonym || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s && s !== root)
+        ),
+      ];
       const pronunciation = transliterateToCyrillic(translation);
 
       results.push({
@@ -253,26 +238,64 @@ const tranlateRussianToGagauz = async (req, res) => {
       });
     }
 
-    if (!results.length) {
-      return res.json({
-        original: text,
-        results: [],
-        code: "",
-      });
-    }
+    if (!results.length)
+      return res.json({ original: text, results: [], code: "" });
     results.sort((a, b) => (a.wcase ?? 0) - (b.wcase ?? 0));
     const code = await getOrCreateShortLink(text, "ru");
-
-    return res.json({
-      original: text,
-      results,
-      code,
-    });
+    return res.json({ original: text, results, code });
   } catch (error) {
     console.error("Translation error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+function selectBestMatch(rows, baseWord) {
+  const lowerBase = baseWord.toLowerCase();
+
+  const candidates = rows.filter((row) => {
+    const allForms = [
+      ...(row.noun?.split(",") || []),
+      ...(row.verb?.split(",") || []),
+      ...(row.adverb?.split(",") || []),
+      ...(row.izafet?.split(",") || []),
+      ...(row.other?.split(",") || []),
+    ]
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    return allForms.includes(lowerBase);
+  });
+
+  if (candidates.length === 1) return candidates[0];
+
+  const scored = candidates.map((row) => {
+    let score = 0;
+    if (row.transcription) score += 2;
+    if (row.info) score += 2;
+
+    // Bonus for typical verb infinitives (e.g. durmaa, gitmää)
+    if (row.word?.endsWith("maa") || row.word?.endsWith("mää")) score += 1;
+
+    // Optional: boost entries with fewer fields (less ambiguity)
+    const formCount = [
+      row.noun,
+      row.verb,
+      row.adverb,
+      row.izafet,
+      row.other,
+    ].filter(Boolean).length;
+    score += 1 / (formCount || 1); // smaller = better
+
+    return { row, score };
+  });
+
+  if (scored.length > 0) {
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].row;
+  }
+
+  return null;
+}
 
 async function getPosTagsFromUdpipe(text) {
   const formData = new URLSearchParams();
