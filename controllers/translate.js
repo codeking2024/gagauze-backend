@@ -142,7 +142,8 @@ const tranlateRussianToGagauz = async (req, res) => {
       let rule;
       let isTrigger = false;
 
-      if (nakl) {
+      if (nakl && time === 0) {
+        // only if no tense is set
         rule = "VERB_IMPERATIVE";
         isTrigger = true;
       }
@@ -235,8 +236,7 @@ const tranlateRussianToGagauz = async (req, res) => {
       }
 
       synonyms = [...new Set(synonyms)].filter((s) => s !== root);
-      const pronunciation =
-        matched.transcription || transliterateToCyrillic(translation);
+      const pronunciation = transliterateToCyrillic(translation);
 
       results.push({
         translation,
@@ -260,7 +260,7 @@ const tranlateRussianToGagauz = async (req, res) => {
         code: "",
       });
     }
-
+    results.sort((a, b) => (a.wcase ?? 0) - (b.wcase ?? 0));
     const code = await getOrCreateShortLink(text, "ru");
 
     return res.json({
