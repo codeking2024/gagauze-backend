@@ -2,10 +2,9 @@ const db = require("../config/db");
 const {
   getLastVowel,
   transliterateToCyrillic,
-  getGagauzNounSuffix,
   getVowelGroup,
 } = require("../utils/grammar");
-const { rules } = require("../utils/rule");
+const { rules, rulesForNoun } = require("../utils/rule");
 const axios = require("axios");
 
 function sanitizeText(text) {
@@ -100,30 +99,107 @@ function convertVerb(
   return stem + (Array.isArray(suffix) ? suffix[0] : suffix);
 }
 
+function getPluralEnding(word) {
+  const vow1 = ["a", "u", "ı", "o", "ê"];
+  const vow2 = ["ä", "ü", "i", "ö", "e"];
+
+  const lastLetter = getLastLetter(word);
+  const lastVowel = getLastVowel(word);
+
+  if (lastLetter === "n" || lastLetter === "m") {
+    if (vow1.includes(lastVowel)) return "nar";
+    if (vow2.includes(lastVowel)) return "när";
+  } else {
+    if (vow1.includes(lastVowel)) return "lar";
+    if (vow2.includes(lastVowel)) return "lär";
+  }
+
+  return ""; // Fallback if no vowel match
+}
+
+function getEndingNoun(rule, letter, wcase) {
+  if (!rulesForNoun[rule]) return false;
+
+  for (const key of Object.keys(rulesForNoun[rule])) {
+    const letters = key.split(",");
+    if (letters.includes(letter)) {
+      const form = rulesForNoun[rule][key];
+      if (form && typeof form[wcase] !== "undefined") {
+        return form[wcase];
+      }
+    }
+  }
+
+  return false;
+}
+
+function cutEndChars(word, count) {
+  const chars = Array.from(word); // Handles multibyte correctly
+  console.log(chars);
+  return chars.slice(0, -count).join("");
+}
+
 function convertNoun(
   root,
   {
     wcase = 0,
     plural = 0,
-    rule = null,
+    rule,
     triggerRule = null,
     triggerTranslate = null,
-    time = null,
+    time = 0,
   }
 ) {
-  if (!root || typeof root !== "string") return root;
+  let suffix = "";
 
-  const lastVowel = getLastVowel(root);
-  const suffix = getGagauzNounSuffix(lastVowel, plural, wcase);
-
-  let prefix = "";
-
-  // Optional logic for prefixing (like negation or future modifiers)
-  if (triggerRule?.toLowerCase().includes("negative") && triggerTranslate) {
-    prefix = triggerTranslate + " ";
+  if (plural == 1) {
+    suffix = getPluralEnding(root);
+    return root + suffix;
   }
 
-  return prefix + root + suffix;
+  const lastVowel = getLastVowel(root);
+  const varcase = {
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+  };
+
+  const _case = varcase[wcase]; // Use `wcase` variable from your logic
+
+  switch (rule) {
+    case "5":
+      root = cutEndChars(root, 2);
+      break;
+    case "6":
+    case "7":
+    case "8":
+      root = cutEndChars(root, 1);
+      break;
+    default:
+      // no change
+      break;
+  }
+
+  suffix = getEndingNoun(rule, lastVowel, _case);
+
+  return root + suffix;
+}
+
+const face = {
+  1: "я",
+  2: "ты",
+  3: "он",
+  4: "мы",
+  5: "вы",
+  6: "они",
+};
+
+function getLastLetter(word) {
+  if (!word) return "";
+  const chars = Array.from(word); // handles emojis, diacritics, etc.
+  return chars[chars.length - 1] || "";
 }
 
 const tranlateRussianToGagauz = async (req, res) => {
@@ -133,116 +209,188 @@ const tranlateRussianToGagauz = async (req, res) => {
   try {
     text = sanitizeText(text);
     const input = text.toLowerCase();
-    const [rusRows] = await db.execute(
-      `SELECT id, word, type, code, gender, time, plural, code_parent, wcase, face, nakl FROM dict_rus WHERE word = ?`,
+
+    // Check collocation table
+    const [rows] = await db.execute(
+      `SELECT id, text, translate FROM collocation WHERE text = ? LIMIT 1`,
       [input]
     );
 
-    if (rusRows.length === 0) {
+    if (rows.length) {
+      let wordType = 4; // expression
+      let original = input;
+      let translate = rows[0].translate;
+      let pronunciation = transliterateToCyrillic(translate);
       const code = await getOrCreateShortLink(text, "ru");
-      return res.json({ original: text, results: [], code });
-    }
 
-    const results = [];
-    for (const rusRow of rusRows) {
-      let {
-        word: baseWord,
-        code_parent: currentCode,
-        plural = 0,
-        wcase = 0,
-        time = null,
-        face = null,
-        nakl = null,
-        type: verbType,
-      } = rusRow;
-
-      let rule = nakl && time === 0 ? "VERB_IMPERATIVE" : null;
-      while (currentCode && currentCode !== 0) {
-        const [parentRows] = await db.execute(
-          `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
-          [currentCode]
-        );
-        if (!parentRows.length) break;
-        baseWord = parentRows[0].word;
-        currentCode = parentRows[0].code_parent;
-      }
-
-      let [gagRows] = await db.execute(
-        `SELECT id, noun, verb, adverb, izafet, other, word, type, rule, stress, transcription, synonym, info FROM dict_gagauz
-         WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
-         ORDER BY LENGTH(word) DESC`,
-        Array(6).fill(`%${baseWord}%`)
+      return res.json({
+        original: original,
+        results: [
+          {
+            translation: translate,
+            wordType: wordType,
+            pronunciation,
+          },
+        ],
+        code,
+      });
+    } else {
+      const [rows] = await db.execute(
+        `SELECT id, name, rule, translate, face FROM triggers WHERE name = ? LIMIT 1`,
+        [input]
       );
 
-      if (!gagRows.length) continue;
+      if (rows.length) {
+        let wordType = 5;
+        let original = input;
+        let translate = rows[0].translate;
+        let pronunciation = "";
+        if (translate) {
+          pronunciation = transliterateToCyrillic(translate);
+        } else {
+          translate = original;
+        }
 
-      const matched = selectBestMatch(gagRows, baseWord);
-      if (!matched) continue;
-
-      const root = matched.word;
-
-      const form = rule?.toLowerCase().includes("negative")
-        ? "negative"
-        : "positive";
-      const tenseMap = {
-        2: "present", // ✅ map PHP `time=2` to PRESENT for verbs like "Иду"
-        3: "pasttense",
-        4: "future",
-        5: "longpasttense",
-      };
-
-      let translation = root;
-      if (verbType === 2) {
-        translation = convertVerb(root, {
-          verbType,
-          form,
-          time: tenseMap[time] || "present",
-          face: face || 1,
-          plural,
-          nakl: !!nakl,
+        const code = await getOrCreateShortLink(text, "ru");
+        return res.json({
+          original: original,
+          results: [
+            {
+              translation: translate,
+              wordType: wordType,
+              pronunciation,
+            },
+          ],
+          code,
         });
-        console.log(translation);
-      } else if (verbType === 1) {
-        translation = convertNoun(root, {
-          wcase,
-          plural,
-          rule: matched.rule,
-          triggerRule: rule,
-          triggerTranslate: matched.translate,
-          time,
-        });
+      } else {
+        const [rusRows] = await db.execute(
+          `SELECT id, word, type, code, gender, time, plural, code_parent, wcase, face, nakl FROM dict_rus WHERE word = ?`,
+          [input]
+        );
+
+        if (rusRows.length === 0) {
+          return res.json({ original: text, results: [], code: "" });
+        }
+
+        const results = [];
+        for (const rusRow of rusRows) {
+          let {
+            word: baseWord,
+            code_parent: currentCode,
+            plural,
+            wcase,
+            time,
+            face,
+            nakl,
+            type: wordType,
+          } = rusRow;
+
+          console.log(rusRow);
+          while (currentCode && currentCode !== 0) {
+            const [parentRows] = await db.execute(
+              `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
+              [currentCode]
+            );
+            if (!parentRows.length) break;
+            baseWord = parentRows[0].word;
+            currentCode = parentRows[0].code_parent;
+          }
+
+          let [gagRows] = await db.execute(
+            `SELECT id, noun, verb, adverb, izafet, other, word, type, rule, stress, transcription, synonym, info FROM dict_gagauz
+           WHERE noun LIKE ? OR izafet LIKE ? OR verb LIKE ? OR adverb LIKE ? OR other LIKE ? OR future_or_past_perfect LIKE ?
+           ORDER BY LENGTH(word) DESC`,
+            Array(6).fill(`%${baseWord}%`)
+          );
+
+          if (!gagRows.length) continue;
+
+          const matched = selectBestMatch(gagRows, baseWord);
+          if (!matched) continue;
+
+          const rule = matched.rule;
+          const root = matched.word;
+          let translation;
+
+          console.log(rule);
+
+          if (wordType == 1 && rule && rule < 10) {
+            translation = convertNoun(root, {
+              wcase,
+              plural,
+              rule: matched.rule,
+              triggerRule: rule,
+              triggerTranslate: matched.translate,
+              time,
+            });
+
+            const synonyms = [
+              ...new Set(
+                (matched.synonym || "")
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter((s) => s && s !== root)
+              ),
+            ];
+            const pronunciation = transliterateToCyrillic(translation);
+
+            results.push({
+              translation,
+              synonyms,
+              pronunciation,
+              info: matched.info || null,
+              base: baseWord,
+              plural,
+              wcase,
+              face,
+              time,
+              nakl,
+              rule: matched.rule || null,
+            });
+          }
+
+          // const form = rule?.toLowerCase().includes("negative")
+          //   ? "negative"
+          //   : "positive";
+          // const tenseMap = {
+          //   2: "present", // ✅ map PHP `time=2` to PRESENT for verbs like "Иду"
+          //   3: "pasttense",
+          //   4: "future",
+          //   5: "longpasttense",
+          // };
+
+          // let translation = root;
+          // if (verbType === 2) {
+          //   translation = convertVerb(root, {
+          //     verbType,
+          //     form,
+          //     time: tenseMap[time] || "present",
+          //     face: face || 1,
+          //     plural,
+          //     nakl: !!nakl,
+          //   });
+          //   console.log(translation);
+          // } else if (verbType === 1) {
+          //   translation = convertNoun(root, {
+          //     wcase,
+          //     plural,
+          //     rule: matched.rule,
+          //     triggerRule: rule,
+          //     triggerTranslate: matched.translate,
+          //     time,
+          //   });
+          // }
+        }
+
+        if (!results.length)
+          return res.json({ original: text, results: [], code: "" });
+
+        results.sort((a, b) => (a.wcase ?? 0) - (b.wcase ?? 0));
+        const code = await getOrCreateShortLink(text, "ru");
+        return res.json({ original: text, results, code });
       }
-
-      const synonyms = [
-        ...new Set(
-          (matched.synonym || "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s && s !== root)
-        ),
-      ];
-      const pronunciation = transliterateToCyrillic(translation);
-
-      results.push({
-        translation,
-        synonyms,
-        pronunciation,
-        info: matched.info || null,
-        base: baseWord,
-        plural,
-        wcase,
-        face,
-        time,
-        nakl,
-        rule: matched.rule || null,
-      });
     }
-
-    if (!results.length)
-      return res.json({ original: text, results: [], code: "" });
-    results.sort((a, b) => (a.wcase ?? 0) - (b.wcase ?? 0));
-    const code = await getOrCreateShortLink(text, "ru");
-    return res.json({ original: text, results, code });
   } catch (error) {
     console.error("Translation error:", error);
     res.status(500).json({ error: "Internal Server Error" });
