@@ -217,7 +217,6 @@ const tranlateRussianToGagauz = async (req, res) => {
     );
 
     if (rows.length) {
-      let wordType = 4; // expression
       let original = input;
       let translate = rows[0].translate;
       let pronunciation = transliterateToCyrillic(translate);
@@ -228,7 +227,6 @@ const tranlateRussianToGagauz = async (req, res) => {
         results: [
           {
             translation: translate,
-            wordType: wordType,
             pronunciation,
           },
         ],
@@ -241,7 +239,6 @@ const tranlateRussianToGagauz = async (req, res) => {
       );
 
       if (rows.length) {
-        let wordType = 5;
         let original = input;
         let translate = rows[0].translate;
         let pronunciation = "";
@@ -257,7 +254,6 @@ const tranlateRussianToGagauz = async (req, res) => {
           results: [
             {
               translation: translate,
-              wordType: wordType,
               pronunciation,
             },
           ],
@@ -312,8 +308,6 @@ const tranlateRussianToGagauz = async (req, res) => {
           const rule = matched.rule;
           const root = matched.word;
           let translation;
-
-          console.log(rule);
 
           if (wordType == 1 && rule && rule < 10) {
             translation = convertNoun(root, {
