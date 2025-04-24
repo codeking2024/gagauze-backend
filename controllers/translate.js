@@ -4,7 +4,16 @@ const {
   transliterateToCyrillic,
   getVowelGroup,
 } = require("../utils/grammar");
-const { rules, rulesForNoun } = require("../utils/rule");
+const {
+  rules,
+  rulesForNoun,
+  consonant,
+  consonantSonorous,
+  consonantDeaf,
+  vowel,
+  vowel_rus,
+  consonant_rus,
+} = require("../utils/rule");
 const axios = require("axios");
 
 function sanitizeText(text) {
@@ -56,47 +65,90 @@ function getVerbStem(root) {
     base = base.slice(0, -3);
   }
 
-  // Convert "t" to "d" if preceded by a vowel (e.g., "git" → "gid")
-  const vowels = ["a", "ä", "e", "i", "ı", "o", "ö", "u", "ü", "ȇ"];
-  const len = base.length;
-  if (len >= 2) {
-    const lastChar = base[len - 1];
-    const prevChar = base[len - 2];
-    if (lastChar === "t" && vowels.includes(prevChar)) {
-      base = base.slice(0, -1) + "d";
-    }
-  }
+  // // Convert "t" to "d" if preceded by a vowel (e.g., "git" → "gid")
+  // const vowels = ["a", "ä", "e", "i", "ı", "o", "ö", "u", "ü", "ȇ"];
+  // const len = base.length;
+  // if (len >= 2) {
+  //   const lastChar = base[len - 1];
+  //   const prevChar = base[len - 2];
+  //   if (lastChar === "t" && vowels.includes(prevChar)) {
+  //     base = base.slice(0, -1) + "d";
+  //   }
+  // }
 
   return base;
 }
 
-function convertVerb(
-  root,
-  {
-    verbType = 1, // 1–4; use rusRow.type
-    form = "positive", // "positive" or "negative"
-    time = "present", // "present", "pasttense", "longpasttense", "future", "futuresimple", "conditional"
-    nakl = false, // imperative mood
-    face = 1, // 1 = I, 2 = you, 3 = he/she/it
-    plural = 0, // 0 = singular, 1 = plural
+function isLastVowelRus(word) {
+  const lastChar = Array.from(word).slice(-1)[0];
+  return vowel_rus.includes(lastChar);
+}
+
+function getEndingVerb(rule, scenario, letter, plural, face, trigger = null) {
+  const r = rule.toLowerCase().split("_"); // e.g., ['verb', 'positive', 'present']
+  const voice = r[1]; // positive / negative
+  const tense = r[2]; // present / pasttense / imperative etc.
+  const number = plural ? "plural" : "singular";
+  face = face || 1;
+
+  if (!rules[voice] || !rules[voice][tense] || !rules[voice][tense][scenario]) {
+    return false;
   }
-) {
-  const stem = getVerbStem(root); // Apply PHP-equivalent preprocessing
-  const vowel = getLastVowel(stem);
-  const vowelGroup = getVowelGroup(vowel);
-  if (!vowelGroup) return stem;
 
-  const mood = nakl ? "imperative" : time;
-  const ruleSet = rules?.[form]?.[mood]?.[verbType]?.[vowelGroup];
-  if (!ruleSet) return stem;
+  // 1. Match vowel group for this scenario
+  const vowelGroupMap = rules[voice][tense][scenario];
+  let selected = null;
 
-  const personRule = ruleSet[face];
-  if (!personRule) return stem;
+  for (const group of Object.keys(vowelGroupMap)) {
+    const groupLetters = group.split(",");
+    if (groupLetters.includes(letter)) {
+      selected = vowelGroupMap[group];
+      break;
+    }
+  }
 
-  const suffix = personRule[plural ? "plural" : "singular"];
-  if (!suffix) return stem;
+  if (!selected) return false;
 
-  return stem + (Array.isArray(suffix) ? suffix[0] : suffix);
+  switch (rule) {
+    case "VERB_POSITIVE_PRESENT":
+      return selected[face]?.[number] ?? false;
+    case "VERB_POSITIVE_PASTTENSE":
+      return selected[3]?.[number][0] ?? false;
+  }
+
+  // // 2. Direct case-based logic
+  // switch (rule) {
+  //   case "VERB_POSITIVE_PRESENT":
+  //     return selected[face]?.[number] ?? false;
+
+  //   case "VERB_POSITIVE_FUTURE":
+  //     // Plural/sg might change based on face
+  //     const futureNum = [4, 5, 6].includes(face) ? "plural" : "singular";
+  //     for (const item of Object.values(selected)) {
+  //       if (item[futureNum] && Array.isArray(item[futureNum])) {
+  //         if (item[futureNum][1] === trigger) {
+  //           return item[futureNum][0];
+  //         } else if (
+  //           Array.isArray(item[futureNum][1]) &&
+  //           item[futureNum][1].includes(trigger)
+  //         ) {
+  //           return item[futureNum][0];
+  //         }
+  //       }
+  //     }
+  //     break;
+  // }
+
+  // 3. Fallback loop-based search for triggers
+  // for (const item of Object.values(selected)) {
+  //   if (item[number] && Array.isArray(item[number])) {
+  //     const [ending, trig] = item[number];
+  //     if (trig === trigger) return ending;
+  //     if (Array.isArray(trig) && trig.includes(trigger)) return ending;
+  //   }
+  // }
+
+  return false;
 }
 
 function getPluralEnding(word) {
@@ -202,6 +254,66 @@ function getLastLetter(word) {
   return chars[chars.length - 1] || "";
 }
 
+function getScenarioVerb(word) {
+  const exceptions = ["git", "et", "tat", "güt", "siyret"];
+
+  if (exceptions.includes(word)) {
+    return 4;
+  }
+
+  for (let i = 1; i <= 3; i++) {
+    if (getRuleGagDict(word, i)) {
+      return i;
+    }
+  }
+
+  return null; // fallback if no match (optional)
+}
+
+// Multibyte-safe slice helpers
+const getLastChar = (word) => Array.from(word).slice(-1)[0] || "";
+const getCharBeforeLast = (word) => Array.from(word).slice(-2, -1)[0] || "";
+
+// The rule function
+function getRuleGagDict(word, i) {
+  const last = getLastChar(word);
+  const beforeLast = getCharBeforeLast(word);
+
+  switch (i) {
+    case 1:
+      if (vowel.includes(last)) return i;
+      break;
+    case 2:
+      if (consonantSonorous.includes(last)) return i;
+      break;
+    case 3:
+      if (consonantDeaf.includes(last)) return i;
+      break;
+    case 4:
+      if (last === "n") return i;
+      break;
+    case 5:
+      if (last === "k" && vowel.includes(beforeLast)) return i;
+      break;
+    case 6:
+      if (last === "t") return i;
+      break;
+    case 7:
+      if (last === "p") return i;
+      break;
+    case 8:
+      if (last === "ç") return i;
+      break;
+    case 9:
+      if (last === "k" && consonant.includes(beforeLast)) return i;
+      break;
+    default:
+      break;
+  }
+
+  return false;
+}
+
 const tranlateRussianToGagauz = async (req, res) => {
   let { text } = req.body;
   if (!text) return res.status(400).json({ error: "Missing text input" });
@@ -228,6 +340,7 @@ const tranlateRussianToGagauz = async (req, res) => {
           {
             translation: translate,
             pronunciation,
+            wcase: null,
           },
         ],
         code,
@@ -255,6 +368,7 @@ const tranlateRussianToGagauz = async (req, res) => {
             {
               translation: translate,
               pronunciation,
+              wcase: null,
             },
           ],
           code,
@@ -282,7 +396,12 @@ const tranlateRussianToGagauz = async (req, res) => {
             type: wordType,
           } = rusRow;
 
-          console.log(rusRow);
+          let current_rule;
+          let form = "POSITIVE";
+          if (nakl) {
+            current_rule = "VERB_" + form + "IMPERATIVE";
+          }
+
           while (currentCode && currentCode !== 0) {
             const [parentRows] = await db.execute(
               `SELECT word, code_parent FROM dict_rus WHERE code = ? LIMIT 1`,
@@ -303,10 +422,12 @@ const tranlateRussianToGagauz = async (req, res) => {
           if (!gagRows.length) continue;
 
           const matched = selectBestMatch(gagRows, baseWord);
+
           if (!matched) continue;
 
           const rule = matched.rule;
           const root = matched.word;
+
           let translation;
 
           if (wordType == 1 && rule && rule < 10) {
@@ -342,6 +463,99 @@ const tranlateRussianToGagauz = async (req, res) => {
               nakl,
               rule: matched.rule || null,
             });
+          }
+
+          if (wordType == 6) {
+            translation = matched.word;
+            const synonyms = [
+              ...new Set(
+                (matched.synonym || "")
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter((s) => s && s !== root)
+              ),
+            ];
+            const pronunciation = transliterateToCyrillic(translation);
+
+            results.push({
+              translation,
+              synonyms,
+              pronunciation,
+              info: matched.info || null,
+              base: baseWord,
+              plural,
+              wcase,
+              face,
+            });
+          }
+
+          if (wordType == 2 || wordType == 5) {
+            if (time == 0 && plural !== 1) {
+              translation = matched.word;
+              const synonyms = [
+                ...new Set(
+                  (matched.synonym || "")
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter((s) => s && s !== root)
+                ),
+              ];
+              const pronunciation = transliterateToCyrillic(translation);
+              results.push({
+                translation,
+                synonyms,
+                pronunciation,
+                info: matched.info,
+                base: baseWord,
+                plural,
+                wcase,
+                face,
+                time,
+                nakl,
+                rule: matched.rule || null,
+              });
+            }
+
+            if (time != 0) {
+              if (time == 1 && wcase == 0) {
+                current_rule = "VERB_" + form + "_PASTTENSE";
+              }
+              if (time == 3 && wcase == 0) {
+                current_rule = "VERB_POSITIVE_FUTURESIMPLE";
+              }
+              if (time == 2 && wcase == 0) {
+                current_rule = "VERB_POSITIVE_PRESENT";
+              }
+              let stem = getVerbStem(root);
+              let scenario = getScenarioVerb(stem);
+              if (scenario == 4) {
+                if (root.endsWith("maa") || root.endsWith("mää")) {
+                  stem = root.slice(0, -4);
+                }
+              }
+              const lastVowel = getLastVowel(stem);
+
+              let suffix = getEndingVerb(
+                current_rule,
+                scenario,
+                lastVowel,
+                plural,
+                face
+              );
+
+              translation = stem + suffix;
+              const pronunciation = transliterateToCyrillic(translation);
+
+              results.push({
+                translation,
+                synonyms: [],
+                pronunciation,
+                info: null,
+                base: root,
+                plural,
+                wcase,
+              });
+            }
           }
 
           // const form = rule?.toLowerCase().includes("negative")

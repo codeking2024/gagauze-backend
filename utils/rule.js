@@ -1678,4 +1678,80 @@ const rulesForNoun = {
   },
 };
 
-module.exports = { rules, rulesForNoun };
+const consonant = [
+  "b",
+  "c",
+  "ç",
+  "d",
+  "f",
+  "g",
+  "h",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "p",
+  "r",
+  "s",
+  "ş",
+  "t",
+  "ţ",
+  "v",
+  "z",
+];
+
+const consonantSonorous = [
+  "b",
+  "c",
+  "d",
+  "g",
+  "j",
+  "l",
+  "m",
+  "r",
+  "v",
+  "y",
+  "z",
+  "ţ",
+];
+
+const consonantDeaf = ["p", "ç", "k", "h", "f", "s", "t"];
+const vowel = ["a", "ä", "e", "ı", "i", "o", "ö", "u", "ü", "y"];
+const vowel_rus = ["а", "е", "ё", "и", "о", "у", "ы", "э", "ю", "я"];
+const consonant_rus = [
+  "б",
+  "в",
+  "г",
+  "д",
+  "ж",
+  "з",
+  "й",
+  "к",
+  "л",
+  "м",
+  "н",
+  "п",
+  "р",
+  "с",
+  "т",
+  "ф",
+  "х",
+  "ц",
+  "ч",
+  "ш",
+  "щ",
+  "ь",
+  "ъ",
+];
+
+module.exports = {
+  rules,
+  rulesForNoun,
+  consonant,
+  consonantSonorous,
+  consonantDeaf,
+  vowel,
+  vowel_rus,
+  consonant_rus,
+};
